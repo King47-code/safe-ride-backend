@@ -1,4 +1,3 @@
-// File: server.js
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -35,6 +34,17 @@ function haversineDistance([lon1, lat1], [lon2, lat2]) {
 
 // Health endpoint
 app.get('/health', (req, res) => res.send({ status: 'OK' }));
+
+app.get('/dbtest', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT NOW() AS now');
+    res.json({ dbTime: rows[0].now });
+  } catch (err) {
+    console.error('DB test error:', err);
+    res.status(500).json({ error: 'Database connection failed' });
+  }
+});
+
 
 // Registration
 app.post('/api/register', async (req, res) => {
