@@ -103,52 +103,37 @@ app.post('/api/rides/fare', auth, async (req, res) => {
 app.post('/api/rides/request', auth, async (req, res) => {
   const { pickup, dropoff } = req.body;
   try {
-    console.log('Ride request from user:', req.user.id, pickup, dropoff);
-
-    // Geocode dropoff
+    // 1) Geocode dropoff name → coords
     const geo = await axios.get(
       `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(dropoff)}.json?access_token=${MAPBOX_TOKEN}`
     );
-    const dc = geo.data.features[0].center;             // [lng, lat]
-    const dist = haversineDistance(pickup, dc);
-    const fare = parseFloat(((5 + 2*dist) * 12).toFixed(2)); // in GHS
+    const dc = geo.data.features[0].center;            // [lng, lat]
 
-    // Build JSON strings for coords
+    // 2) Calculate GHS fare
+    const distance = haversineDistance(pickup, dc);
+    const fare     = parseFloat(((5 + 2 * distance) * 12).toFixed(2));
+
+    // 3) Build JSONB payloads
     const pickupJson  = JSON.stringify({ lat: pickup[1], lng: pickup[0] });
     const dropoffJson = JSON.stringify({ lat: dc[1],       lng: dc[0] });
 
-    // Parameterized INSERT
+    // 4) INSERT only into the 5 core columns
     const { rows } = await pool.query(
       `INSERT INTO rides
-         (rider_id,
-          pickup_location,
-          dropoff_location,
-          pickup_coords,
-          dropoff_coords,
-          fare,
-          status,
-          payment_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (rider_id, pickup_coords, dropoff_coords, fare, status)
+       VALUES
+         ($1, $2,           $3,            $4,   $5)
        RETURNING *`,
-      [
-        req.user.id,
-        'Pickup Location',   // You can replace with req.body.pickupLocation if passed
-        dropoff,
-        pickupJson,
-        dropoffJson,
-        fare,
-        'requested',
-        'pending'
-      ]
+      [ req.user.id, pickupJson, dropoffJson, fare, 'requested' ]
     );
 
-    const ride = rows[0];
-    io.emit('ride_requested', ride);
-    res.json(ride);
+    // 5) Emit and reply
+    io.emit('ride_requested', rows[0]);
+    res.json(rows[0]);
 
   } catch (err) {
     console.error('Ride request failed:', err.message);
-    res.status(500).json({ error: 'Ride request failed', details: err.message });
+    return res.status(500).json({ error: 'Ride request failed', details: err.message });
   }
 });
 
