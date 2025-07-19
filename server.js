@@ -114,9 +114,13 @@ app.post('/api/rides/request', auth, async (req, res) => {
     const fare = parseFloat(((5 + 2 * distance) * 12).toFixed(2)); // Fare in GHS
 
     const result = await pool.query(
-      'INSERT INTO rides (rider_id, pickup_coords, dropoff_coords, fare, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [req.user.id, pickup, dropoffCoords, fare, 'requested']
+      `INSERT INTO rides 
+      (rider_id, pickup_coords, dropoff_coords, fare, status, payment_status, requested_at, updated_at)
+      VALUES ($1, ST_MakePoint($2, $3), ST_MakePoint($4, $5), $6, $7, 'pending', NOW(), NOW()) 
+      RETURNING *`,
+      [req.user.id, pickup[0], pickup[1], dropoffCoords[0], dropoffCoords[1], fare, 'requested']
     );
+
     io.emit('ride_requested', result.rows[0]);
     res.json(result.rows[0]);
   } catch (err) {
