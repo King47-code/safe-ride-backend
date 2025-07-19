@@ -15,30 +15,29 @@ const io = require('socket.io')(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(bodyParser.json());
 
-// Database connection
+// PostgreSQL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Constants
+// Secrets
 const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN;
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// Haversine formula for distance
+// Distance calculator
 function haversineDistance([lon1, lat1], [lon2, lat2]) {
   const toRad = deg => (deg * Math.PI) / 180;
   const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
 
-// Health endpoint
+// Health
 app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
 // DB connection test
@@ -52,7 +51,7 @@ app.get('/dbtest', async (req, res) => {
   }
 });
 
-// Register new user
+// Registration
 app.post('/api/register', async (req, res) => {
   const { name, phone, password, role } = req.body;
   try {
@@ -85,7 +84,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Middleware: Verify token
+// Auth middleware
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: 'No token provided' });
@@ -98,7 +97,7 @@ function auth(req, res, next) {
   }
 }
 
-// Fare estimation
+// Fare endpoint
 app.post('/api/rides/fare', auth, (req, res) => {
   const { pickup, dropoff } = req.body;
   const distance = haversineDistance(pickup, dropoff);
@@ -106,14 +105,23 @@ app.post('/api/rides/fare', auth, (req, res) => {
   res.json({ distance_km: distance.toFixed(2), estimated_fare: fare });
 });
 
-// Ride request
+// Request ride (automatically calculate fare inside)
 app.post('/api/rides/request', auth, async (req, res) => {
-  const { pickup, dropoff, fare } = req.body;
+  const { pickup, dropoff_name } = req.body;
+
   try {
+    const geo = await axios.get(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(dropoff_name)}.json?access_token=${MAPBOX_TOKEN}`);
+    const dropoff_coords = geo.data.features[0].center;
+    const fare = parseFloat((5 + 2 * haversineDistance(pickup, dropoff_coords)).toFixed(2));
+
+    const pickupPoint = `(${pickup[0]},${pickup[1]})`;
+    const dropoffPoint = `(${dropoff_coords[0]},${dropoff_coords[1]})`;
+
     const result = await pool.query(
-      'INSERT INTO rides (rider_id, pickup_coords, dropoff_coords, fare, status) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [req.user.id, pickup, dropoff, fare, 'requested']
+      'INSERT INTO rides (rider_id, pickup_coords, dropoff_coords, fare, status, dropoff_location) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+      [req.user.id, pickupPoint, dropoffPoint, fare, 'requested', dropoff_name]
     );
+
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Ride request failed:', err);
@@ -159,7 +167,7 @@ app.get('/api/driver/earnings', auth, async (req, res) => {
   }
 });
 
-// Chat (Socket.IO)
+// Chat
 io.on('connection', socket => {
   socket.on('join', ({ userId }) => socket.join(userId));
   socket.on('message', msg => io.emit('message', msg));
@@ -167,4 +175,4 @@ io.on('connection', socket => {
 
 // Start server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server running on ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
