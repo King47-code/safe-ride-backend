@@ -1,73 +1,65 @@
-// server.js — Safe Ride Backend (PostgreSQL + JSONB coords)
+// server.js — Safe Ride Backend
 
 require('dotenv').config();
-const express = require('express');
+const express    = require('express');
 const bodyParser = require('body-parser');
-const cors = require('cors');
-const axios = require('axios');
-const { Pool } = require('pg');
-const jwt = require('jsonwebtoken');
-const http = require('http');
+const cors       = require('cors');
+const axios      = require('axios');
+const { Pool }   = require('pg');
+const jwt        = require('jsonwebtoken');
+const http       = require('http');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
-const io = require('socket.io')(server, { cors: { origin: '*' } });
+const io     = require('socket.io')(server, { cors: { origin: '*' } });
 
 app.use(cors());
 app.use(bodyParser.json());
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+const pool         = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN;
 const JWT_SECRET   = process.env.JWT_SECRET;
 
 // Haversine distance (km)
 function haversineDistance([lon1, lat1], [lon2, lat2]) {
-  const toRad = deg => (deg * Math.PI) / 180;
+  const toRad = deg => deg * Math.PI / 180;
   const R = 6371;
   const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat/2)**2 
-          + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  const a = Math.sin(dLat/2)**2
+          + Math.cos(toRad(lat1))*Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // Auth middleware
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error:'No token provided' });
+  if (!header) return res.status(401).json({ error: 'No token provided' });
   const token = header.split(' ')[1];
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error:'Invalid token' }); }
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
 }
 
-// Health & DB test
-app.get('/health',            (req, res) => res.json({ status:'OK' }));
-app.get('/dbtest', auth, async (req, res) => {
-  try {
-    const { rows } = await pool.query('SELECT NOW() AS now');
-    res.json({ dbTime: rows[0].now });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error:'DB test failed' });
-  }
-});
+// Health check
+app.get('/health', (req, res) => res.json({ status: 'OK' }));
 
-// Register
+// Registration
 app.post('/api/register', async (req, res) => {
   const { name, phone, password, role } = req.body;
   try {
     const { rows } = await pool.query(
-      `INSERT INTO users (name,phone,password,role,is_available)
-       VALUES($1,$2,$3,$4,$5)
-       RETURNING id,name,role`,
-      [name, phone, password, role, role==='driver']
+      `INSERT INTO users (name, phone, password, role, is_available)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name, role`,
+      [name, phone, password, role, role === 'driver']
     );
     res.json(rows[0]);
   } catch (err) {
-    console.error('Register error:', err.message);
-    res.status(500).json({ error:'Registration failed' });
+    console.error('Registration error:', err.message);
+    res.status(500).json({ error: 'Registration failed' });
   }
 });
 
@@ -76,33 +68,34 @@ app.post('/api/login', async (req, res) => {
   const { phone, password } = req.body;
   try {
     const { rows } = await pool.query(
-      `SELECT id,name,role FROM users WHERE phone=$1 AND password=$2`,
+      `SELECT id, name, role FROM users WHERE phone = $1 AND password = $2`,
       [phone, password]
     );
-    if (!rows.length) return res.status(401).json({ error:'Invalid credentials' });
+    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
     const user = rows[0];
-    const token = jwt.sign({ id:user.id, role:user.role }, JWT_SECRET);
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET);
     res.json({ ...user, token });
   } catch (err) {
     console.error('Login error:', err.message);
-    res.status(500).json({ error:'Login failed' });
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// Fare calc
+// Fare calculation
 app.post('/api/rides/fare', auth, async (req, res) => {
   const { pickup, dropoff } = req.body;
   try {
+    // Geocode dropoff name to coords
     const geo = await axios.get(
       `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(dropoff)}.json?access_token=${MAPBOX_TOKEN}`
     );
-    const dc = geo.data.features[0].center;
+    const dc = geo.data.features[0].center;           // [lng, lat]
     const dist = haversineDistance(pickup, dc);
-    const fare = parseFloat((5 + 2*dist).toFixed(2));
+    const fare = parseFloat((5 + 2 * dist).toFixed(2));
     res.json({ distance_km: dist.toFixed(2), estimated_fare: fare, dropoff_coords: dc });
   } catch (err) {
     console.error('Fare calc error:', err.message);
-    res.status(500).json({ error:'Fare calculation failed' });
+    res.status(500).json({ error: 'Fare calculation failed' });
   }
 });
 
@@ -110,36 +103,52 @@ app.post('/api/rides/fare', auth, async (req, res) => {
 app.post('/api/rides/request', auth, async (req, res) => {
   const { pickup, dropoff } = req.body;
   try {
-    console.log('RequestRide → user:', req.user.id, 'pickup:', pickup, 'dropoff:', dropoff);
+    console.log('Ride request from user:', req.user.id, pickup, dropoff);
 
-    // geocode dropoff
+    // Geocode dropoff
     const geo = await axios.get(
       `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(dropoff)}.json?access_token=${MAPBOX_TOKEN}`
     );
     const dc = geo.data.features[0].center;             // [lng, lat]
-    const dist = haversineDistance(pickup, dc);         // km
-    const fare = parseFloat(((5 + 2*dist) * 12).toFixed(2)); // GHS
+    const dist = haversineDistance(pickup, dc);
+    const fare = parseFloat(((5 + 2*dist) * 12).toFixed(2)); // in GHS
 
-    // insert into rides (JSONB coords)
+    // Build JSON strings for coords
+    const pickupJson  = JSON.stringify({ lat: pickup[1], lng: pickup[0] });
+    const dropoffJson = JSON.stringify({ lat: dc[1],       lng: dc[0] });
+
+    // Parameterized INSERT
     const { rows } = await pool.query(
       `INSERT INTO rides
-       (rider_id, pickup_coords, dropoff_coords, fare, status, payment_status, requested_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), NOW())
+         (rider_id,
+          pickup_location,
+          dropoff_location,
+          pickup_coords,
+          dropoff_coords,
+          fare,
+          status,
+          payment_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         req.user.id,
-        { x: pickup[0], y: pickup[1] },
-        { x: dc[0],       y: dc[1]       },
+        'Pickup Location',   // You can replace with req.body.pickupLocation if passed
+        dropoff,
+        pickupJson,
+        dropoffJson,
         fare,
-        'requested'
+        'requested',
+        'pending'
       ]
     );
 
-    io.emit('ride_requested', rows[0]);
-    res.json(rows[0]);
+    const ride = rows[0];
+    io.emit('ride_requested', ride);
+    res.json(ride);
+
   } catch (err) {
     console.error('Ride request failed:', err.message);
-    res.status(500).json({ error:'Ride request failed', details: err.message });
+    res.status(500).json({ error: 'Ride request failed', details: err.message });
   }
 });
 
@@ -148,20 +157,22 @@ app.post('/api/rides/accept', auth, async (req, res) => {
   const { rideId } = req.body;
   try {
     await pool.query(
-      `UPDATE rides SET driver_id=$1, status=$2, updated_at=NOW() WHERE id=$3`,
+      `UPDATE rides
+       SET driver_id = $1, status = $2, updated_at = NOW()
+       WHERE id = $3`,
       [req.user.id, 'accepted', rideId]
     );
     io.emit('ride_accepted', { rideId, driverId: req.user.id });
-    res.json({ success:true });
+    res.json({ success: true });
   } catch (err) {
     console.error('Accept ride error:', err.message);
-    res.status(500).json({ error:'Could not accept ride' });
+    res.status(500).json({ error: 'Could not accept ride' });
   }
 });
 
 // Ride history
 app.get('/api/rides/history', auth, async (req, res) => {
-  const col = req.user.role==='driver' ? 'driver_id' : 'rider_id';
+  const col = req.user.role === 'driver' ? 'driver_id' : 'rider_id';
   try {
     const { rows } = await pool.query(
       `SELECT * FROM rides WHERE ${col} = $1 ORDER BY requested_at DESC`,
@@ -170,7 +181,7 @@ app.get('/api/rides/history', auth, async (req, res) => {
     res.json(rows);
   } catch (err) {
     console.error('History fetch error:', err.message);
-    res.status(500).json({ error:'History fetch failed' });
+    res.status(500).json({ error: 'History fetch failed' });
   }
 });
 
@@ -178,29 +189,32 @@ app.get('/api/rides/history', auth, async (req, res) => {
 app.get('/api/drivers/nearby', auth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id,name,location FROM users 
-       WHERE role='driver' AND is_available IS TRUE`
+      `SELECT id, name, location
+         FROM users
+        WHERE role = 'driver' AND is_available = TRUE`
     );
     res.json(rows);
   } catch (err) {
     console.error('Nearby drivers error:', err.message);
-    res.status(500).json({ error:'Driver fetch failed' });
+    res.status(500).json({ error: 'Driver fetch failed' });
   }
 });
 
-// Driver location update
+// Update driver location
 app.post('/api/drivers/location', auth, async (req, res) => {
   const { lat, lng } = req.body;
   try {
     await pool.query(
-      `UPDATE users SET location=POINT($1,$2), updated_at=NOW() WHERE id=$3`,
-      [lng, lat, req.user.id]
+      `UPDATE users
+          SET location = $1, updated_at = NOW()
+        WHERE id = $2`,
+      [ JSON.stringify({ lat, lng }), req.user.id ]
     );
     io.emit('driver_location', { userId: req.user.id, lat, lng });
-    res.json({ success:true });
+    res.json({ success: true });
   } catch (err) {
     console.error('Location update error:', err.message);
-    res.status(500).json({ error:'Location update failed' });
+    res.status(500).json({ error: 'Location update failed' });
   }
 });
 
@@ -208,38 +222,41 @@ app.post('/api/drivers/location', auth, async (req, res) => {
 app.get('/api/payments', auth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM payments WHERE user_id=$1 ORDER BY paid_at DESC`,
+      `SELECT * FROM payments
+        WHERE user_id = $1
+        ORDER BY paid_at DESC`,
       [req.user.id]
     );
     res.json(rows);
   } catch (err) {
     console.error('Payments error:', err.message);
-    res.status(500).json({ error:'Payments fetch failed' });
+    res.status(500).json({ error: 'Payments fetch failed' });
   }
 });
+
 app.get('/api/driver/earnings', auth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT SUM(amount) AS total FROM payments WHERE driver_id=$1`,
+      `SELECT SUM(amount)::NUMERIC(10,2) AS total
+         FROM payments
+        WHERE driver_id = $1`,
       [req.user.id]
     );
     res.json(rows[0]);
   } catch (err) {
     console.error('Earnings error:', err.message);
-    res.status(500).json({ error:'Earnings fetch failed' });
+    res.status(500).json({ error: 'Earnings fetch failed' });
   }
 });
 
-// Chat
+// Chat & sockets
 io.on('connection', socket => {
   socket.on('join_ride', rideId => socket.join(`ride_${rideId}`));
-  socket.on('chat_message', ({ rideId, message }) =>
-    io.to(`ride_${rideId}`).emit('chat_message', { message })
-  );
-  socket.on('location_update', data =>
-    io.emit('driver_location', data)
-  );
+  socket.on('chat_message', ({ rideId, message }) => {
+    io.to(`ride_${rideId}`).emit('chat_message', { message });
+  });
+  socket.on('location_update', data => io.emit('driver_location', data));
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚗 Safe Ride server running on port ${PORT}`));
