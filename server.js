@@ -114,13 +114,14 @@ app.post('/api/rides/request', auth, async (req, res) => {
     const fare = parseFloat(((5 + 2 * distance) * 12).toFixed(2)); // Fare in GHS
 
     const result = await pool.query(
-'INSERT INTO ride (rider_id, pickup_coords, dropoff_coords, fare, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [req.user.id, pickup[0], pickup[1], dropoffCoords[0], dropoffCoords[1], fare, 'requested']
+      'INSERT INTO ride (rider_id, pickup_coords, dropoff_coords, fare, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [req.user.id, JSON.stringify(pickup), JSON.stringify(dropoffCoords), fare, 'requested']
     );
 
     io.emit('ride_requested', result.rows[0]);
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Ride request failed:', err.message);
     res.status(500).json({ error: 'Ride request failed' });
   }
 });
@@ -129,7 +130,7 @@ app.post('/api/rides/request', auth, async (req, res) => {
 app.post('/api/rides/accept', auth, async (req, res) => {
   const { rideId } = req.body;
   try {
-    await pool.query('UPDATE rides SET driver_id = $1, status = $2 WHERE id = $3', [req.user.id, 'accepted', rideId]);
+    await pool.query('UPDATE ride SET driver_id = $1, status = $2 WHERE id = $3', [req.user.id, 'accepted', rideId]);
     io.emit('ride_accepted', { rideId, driverId: req.user.id });
     res.json({ success: true });
   } catch {
@@ -141,7 +142,7 @@ app.post('/api/rides/accept', auth, async (req, res) => {
 app.get('/api/rides/history', auth, async (req, res) => {
   const col = req.user.role === 'driver' ? 'driver_id' : 'rider_id';
   try {
-    const { rows } = await pool.query(`SELECT * FROM rides WHERE ${col} = $1`, [req.user.id]);
+    const { rows } = await pool.query(`SELECT * FROM ride WHERE ${col} = $1`, [req.user.id]);
     res.json(rows);
   } catch {
     res.status(500).json({ error: 'History fetch failed' });
